@@ -6,8 +6,9 @@ use error_iter::ErrorIter as _;
 use log::error;
 use pixels::{Error, Pixels, SurfaceTexture};
 use winit::dpi::LogicalSize;
-use winit::event::{Event, VirtualKeyCode};
-use winit::event_loop::{ControlFlow, EventLoop};
+use winit::event::{Event, WindowEvent};
+use winit::event_loop::EventLoop;
+use winit::keyboard::KeyCode;
 use winit::window::WindowBuilder;
 use winit_input_helper::WinitInputHelper;
 
@@ -27,7 +28,7 @@ struct World {
 
 fn main() -> Result<(), Error> {
     env_logger::init();
-    let event_loop = EventLoop::new();
+    let event_loop = EventLoop::new().unwrap();
     let mut input = WinitInputHelper::new();
     let window = {
         let size = LogicalSize::new(WIDTH as f64, HEIGHT as f64);
@@ -48,57 +49,69 @@ fn main() -> Result<(), Error> {
     let mut time = 0.0;
     let mut noise_renderer = NoiseRenderer::new(&pixels, window_size.width, window_size.height)?;
 
-    event_loop.run(move |event, _, control_flow| {
-        // Draw the current frame
-        if let Event::RedrawRequested(_) = event {
-            world.draw(pixels.frame_mut());
+    event_loop
+        .run(move |event, event_loop| {
+            // Draw the current frame
+            if let Event::WindowEvent {
+                event: WindowEvent::RedrawRequested,
+                ..
+            } = &event
+            {
+                world.draw(pixels.frame_mut());
 
-            let render_result = pixels.render_with(|encoder, render_target, context| {
-                let noise_texture = noise_renderer.texture_view();
-                context.scaling_renderer.render(encoder, noise_texture);
+                let render_result = pixels.render_with(|encoder, render_target, context| {
+                    let noise_texture = noise_renderer.texture_view();
+                    context.scaling_renderer.render(encoder, noise_texture);
 
-                noise_renderer.update(&context.queue, time);
-                time += 0.01;
+                    noise_renderer.update(&context.queue, time);
+                    time += 0.01;
 
-                noise_renderer.render(encoder, render_target, context.scaling_renderer.clip_rect());
+                    noise_renderer.render(
+                        encoder,
+                        render_target,
+                        context.scaling_renderer.clip_rect(),
+                    );
 
-                Ok(())
-            });
+                    Ok(())
+                });
 
-            if let Err(err) = render_result {
-                log_error("pixels.render_with", err);
-                *control_flow = ControlFlow::Exit;
-                return;
-            }
-        }
-
-        // Handle input events
-        if input.update(&event) {
-            // Close events
-            if input.key_pressed(VirtualKeyCode::Escape) || input.close_requested() {
-                *control_flow = ControlFlow::Exit;
-                return;
-            }
-
-            // Resize the window
-            if let Some(size) = input.window_resized() {
-                if let Err(err) = pixels.resize_surface(size.width, size.height) {
-                    log_error("pixels.resize_surface", err);
-                    *control_flow = ControlFlow::Exit;
-                    return;
-                }
-                if let Err(err) = noise_renderer.resize(&pixels, size.width, size.height) {
-                    log_error("noise_renderer.resize", err);
-                    *control_flow = ControlFlow::Exit;
+                if let Err(err) = render_result {
+                    log_error("pixels.render_with", err);
+                    event_loop.exit();
                     return;
                 }
             }
 
-            // Update internal state and request a redraw
-            world.update();
-            window.request_redraw();
-        }
-    });
+            // Handle input events
+            if input.update(&event) {
+                // Close events
+                if input.key_pressed(KeyCode::Escape) || input.close_requested() {
+                    event_loop.exit();
+                    return;
+                }
+
+                // Resize the window
+                if let Some(size) = input.window_resized() {
+                    if let Err(err) = pixels.resize_surface(size.width, size.height) {
+                        log_error("pixels.resize_surface", err);
+                        event_loop.exit();
+                        return;
+                    }
+                    if let Err(err) = noise_renderer.resize(&pixels, size.width, size.height) {
+                        log_error("noise_renderer.resize", err);
+                        event_loop.exit();
+                        return;
+                    }
+                }
+
+                // Update internal state and request a redraw
+                world.update();
+                window.request_redraw();
+            }
+        })
+        .expect("event loop exited with error");
+
+    Ok(())
 }
 
 fn log_error<E: std::error::Error + 'static>(method_name: &str, err: E) {
